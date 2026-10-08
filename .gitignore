@@ -1,0 +1,12 @@
+# ROS 2 build artifacts
+build/
+install/
+log/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary test data
+hand_check_dorsal_*
