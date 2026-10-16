@@ -15,12 +15,19 @@ Pipeline:
   4. Angle-to-ratio mapping (0.0 open ~ 1.0 closed)
   5. Exponential smoothing, deadzone, max_ratio, and max_step limiting
   6. Shortest angle delta calculation between open_pose_deg and close_pose_deg
-  7. Publishing 16 motor positions in radians to `/joint_states` for RViz URDF simulation
+  7. Publishing 16 joint positions in radians to `/joint_states` for RViz URDF simulation
+     (motor ID -> LEAP URDF joint name via `urdf_joint` / `urdf_sign` in the motor map)
+  8. Publishing [thumb, index, middle, ring] ratios to `/left_hand/finger_ratios`
+     (consumed by left_hand_finger_ratio_node_safe.py to drive the real hand once ARMED)
+
+Calibration: config/left_hand_motor_map.json (open = encoder 2048 for every motor).
 """
 import argparse
+import json
 import math
 import sys
 import time
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -29,33 +36,34 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float32MultiArray
 
 TOPIC_NAME = "/joint_states"
+RATIO_TOPIC = "/left_hand/finger_ratios"
 FINGER_NAMES = ["index", "middle", "ring", "thumb"]
-
-FINGER_IDS = {
-    "index": [0, 1, 2, 3],
-    "middle": [4, 5, 6, 7],
-    "ring": [8, 9, 10, 11],
-    "thumb": [12, 13, 14, 15],
-}
-
-# Colleague's exact motor map (left_hand_motor_map.json)
-OPEN_POSE_DEG = {
-    "0": 182.90, "1": 179.65, "2": 182.55, "3": -2.11,
-    "4": 176.57, "5": 89.47, "6": 178.86, "7": 83.76,
-    "8": 175.52, "9": 360.53, "10": 179.56, "11": 173.32,
-    "12": 176.48, "13": 274.57, "14": 181.23, "15": 173.41,
-}
-
-CLOSE_POSE_DEG = {
-    "0": 205.75, "1": 224.65, "2": 172.55, "3": 102.89,
-    "4": 206.89, "5": 136.85, "6": 171.36, "7": 189.76,
-    "8": 222.01, "9": 50.00, "10": 179.65, "11": 284.85,
-    "12": 290.31, "13": 268.77, "14": 178.77, "15": 298.83,
-}
+RATIO_ORDER = ["thumb", "index", "middle", "ring"]  # order expected by the real-hand node
+MOTOR_MAP_NAME = "left_hand_motor_map.json"
 
 
+def default_motor_map_path():
+    """Installed package share first, then the source tree (for running the .py directly)."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        p = Path(get_package_share_directory("leap_teleop")) / "config" / MOTOR_MAP_NAME
+        if p.exists():
+            return p
+    except Exception:
+        pass
+    return Path(__file__).resolve().parent.parent / "config" / MOTOR_MAP_NAME
+
+
+def load_motor_map(path):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    for key in ("ids", "open_pose_deg", "close_pose_deg", "urdf_joint"):
+        if key not in data:
+            raise KeyError(f"motor map missing '{key}': {path}")
+    return data
 
 
 class RealSenseCamera:
@@ -250,30 +258,22 @@ def shortest_angle_delta(open_deg, close_deg):
     return delta
 
 
-def get_joint_position_rad(dxl_id, ratios):
+def get_joint_position_rad(motor_map, dxl_id, ratios):
+    """Motor travel (open -> close, scaled by finger ratio) as a URDF joint angle."""
     key = str(dxl_id)
-    open_deg = float(OPEN_POSE_DEG[key])
-    close_deg = float(CLOSE_POSE_DEG[key])
+    open_deg = float(motor_map["open_pose_deg"][key])
+    close_deg = float(motor_map["close_pose_deg"][key])
 
     delta_deg = shortest_angle_delta(open_deg, close_deg)
 
     ratio = 0.0
-    for finger_name, ids in FINGER_IDS.items():
+    for finger_name, ids in motor_map["ids"].items():
         if dxl_id in ids:
             ratio = ratios[finger_name]
             break
 
-    # Yaw joints (0, 4, 8) control side-to-side spread of fingers.
-    # Zero out yaw delta so fingers bend straight forward without tilting right.
-    if dxl_id in [0, 4, 8]:
-        delta_deg = 0.0
-
-    # For flexion joints (non-yaw joints), ensure positive forward bending direction
-    if dxl_id not in [0, 4, 8, 12]:
-        delta_deg = abs(delta_deg)
-
-    joint_deg = delta_deg * ratio
-    return math.radians(joint_deg)
+    sign = float(motor_map.get("urdf_sign", {}).get(key, 1))
+    return math.radians(sign * delta_deg * ratio)
 
 
 def draw_text(image, target, output, publish_enabled, hand_detected, source_name):
@@ -316,18 +316,38 @@ def draw_text(image, target, output, publish_enabled, hand_detected, source_name
 
 
 class ColleagueRatioJointStatePublisher(Node):
-    def __init__(self):
+    def __init__(self, motor_map):
         super().__init__("leap_joint_state_publisher")
+        self.motor_map = motor_map
         self.publisher = self.create_publisher(JointState, TOPIC_NAME, 10)
+        self.ratio_publisher = self.create_publisher(Float32MultiArray, RATIO_TOPIC, 10)
         self.get_logger().info("Colleague Ratio LEAP Teleop Node started.")
         self.get_logger().info(f"Publishing 16 joint states to {TOPIC_NAME}")
+        self.get_logger().info(f"Publishing finger ratios to {RATIO_TOPIC}")
 
     def publish_ratios(self, ratios):
+        # 1. Publish URDF joint states for RViz simulation
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = [str(i) for i in range(16)]
-        msg.position = [get_joint_position_rad(i, ratios) for i in range(16)]
+        names = []
+        positions = []
+        for dxl_id in range(16):
+            urdf_joint = self.motor_map.get("urdf_joint", {}).get(str(dxl_id), str(dxl_id))
+            names.append(urdf_joint)
+            positions.append(get_joint_position_rad(self.motor_map, dxl_id, ratios))
+        msg.name = names
+        msg.position = positions
         self.publisher.publish(msg)
+
+        # 2. Publish finger ratios for real-hand safe node (order: thumb, index, middle, ring)
+        ratio_msg = Float32MultiArray()
+        ratio_msg.data = [
+            float(ratios.get("thumb", 0.0)),
+            float(ratios.get("index", 0.0)),
+            float(ratios.get("middle", 0.0)),
+            float(ratios.get("ring", 0.0)),
+        ]
+        self.ratio_publisher.publish(ratio_msg)
 
 
 def rotate_frame(frame, rot):
@@ -354,11 +374,14 @@ def main():
     parser.add_argument("--lost-timeout", type=float, default=0.4, help="Hand lost timeout")
     parser.add_argument("--no-gui", action="store_true", help="Disable OpenCV window GUI")
     parser.add_argument("--disable-auto-publish", action="store_true", help="Start with publish OFF (press 's' to enable)")
+    parser.add_argument("--motor-map", type=str, default=str(default_motor_map_path()), help="Path to motor map JSON")
 
     args, unknown = parser.parse_known_args()
 
+    motor_map = load_motor_map(Path(args.motor_map))
+
     rclpy.init()
-    node = ColleagueRatioJointStatePublisher()
+    node = ColleagueRatioJointStatePublisher(motor_map)
 
     cam = None
     cam_type = args.source
