@@ -38,15 +38,17 @@ LEN_GOAL_POSITION = 4
 TORQUE_OFF = 0
 TORQUE_ON = 1
 
-FINGER_TOPIC = "/left_hand/finger_ratios"
-ARM_TOPIC = "/left_hand/arm"
+FINGER_TOPIC = "/right_hand/finger_ratios"
+ARM_TOPIC = "/right_hand/arm"
+FALLBACK_FINGER_TOPIC = "/left_hand/finger_ratios"
+FALLBACK_ARM_TOPIC = "/left_hand/arm"
 
 FINGER_NAMES = ["thumb", "index", "middle", "ring"]
 
 # Shared calibration (open = 2048 for all motors), same file the RViz node uses.
 DEFAULT_MOTOR_MAP = (
     Path(__file__).resolve().parent.parent
-    / "leap_teleop" / "config" / "left_hand_motor_map.json"
+    / "leap_teleop" / "config" / "right_hand_motor_map.json"
 )
 
 
@@ -167,6 +169,12 @@ class LeftHandSafeFingerRatioNode(Node):
             self.finger_callback,
             10,
         )
+        self.fallback_finger_sub = self.create_subscription(
+            Float32MultiArray,
+            FALLBACK_FINGER_TOPIC,
+            self.finger_callback,
+            10,
+        )
 
         self.arm_sub = self.create_subscription(
             Bool,
@@ -174,18 +182,24 @@ class LeftHandSafeFingerRatioNode(Node):
             self.arm_callback,
             10,
         )
+        self.fallback_arm_sub = self.create_subscription(
+            Bool,
+            FALLBACK_ARM_TOPIC,
+            self.arm_callback,
+            10,
+        )
 
-        self.get_logger().info("Left Hand SAFE Finger Ratio Node started")
-        self.get_logger().info(f"Subscribed: {FINGER_TOPIC}")
-        self.get_logger().info(f"Subscribed: {ARM_TOPIC}")
+        self.get_logger().info("Right Hand SAFE Finger Ratio Node started")
+        self.get_logger().info(f"Subscribed: {FINGER_TOPIC} (fallback: {FALLBACK_FINGER_TOPIC})")
+        self.get_logger().info(f"Subscribed: {ARM_TOPIC} (fallback: {FALLBACK_ARM_TOPIC})")
         self.get_logger().info("Initial state: DISARMED")
         self.get_logger().info("Arm command:")
         self.get_logger().info(
-            'ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: true}"'
+            'ros2 topic pub --once /right_hand/arm std_msgs/msg/Bool "{data: true}"'
         )
         self.get_logger().info("Disarm command:")
         self.get_logger().info(
-            'ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: false}"'
+            'ros2 topic pub --once /right_hand/arm std_msgs/msg/Bool "{data: false}"'
         )
 
     def open_hardware(self):

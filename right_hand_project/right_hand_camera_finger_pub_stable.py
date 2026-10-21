@@ -10,7 +10,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 
-TOPIC_NAME = "/left_hand/finger_ratios"
+TOPIC_NAME = "/right_hand/finger_ratios"
 FINGER_NAMES = ["thumb", "index", "middle", "ring"]
 
 

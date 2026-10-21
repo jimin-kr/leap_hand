@@ -92,21 +92,23 @@ python3 right_hand_project/right_hand_finger_ratio_node_safe.py
 ### [터미널 2] 비전 손 랜드마크 추적 노드
 ```bash
 cd ~/arm_lab_control/leap_hand
-ros2 run leap_teleop left_hand_teleop_node
+ros2 run leap_teleop right_hand_teleop_node
 ```
 * 카메라 화면에 손이 인식되면 초록색 랜드마크와 함께 실시간 파지 비율이 계산되어 토픽으로 발행됩니다.
+* *(참고: left_hand_teleop_node로 실행하셔도 동일하게 작동합니다)*
 
 ### [터미널 3] 파지 시작 (ARM) 및 비상 대처
 ```bash
 # 손 동작을 실제 모터로 전달 시작 (ARM):
-ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /right_hand/arm std_msgs/msg/Bool "{data: true}"
 
 # 일시 중지 (DISARM):
-ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /right_hand/arm std_msgs/msg/Bool "{data: false}"
 
 # 비상 정지 (즉시 전 모터 힘 풀기):
 python3 right_hand_project/dxl_torque_off.py
 ```
+*(참고: /left_hand/arm 으로 발행하셔도 폴백 지원되어 정상 수신됩니다)*
 
 ---
 

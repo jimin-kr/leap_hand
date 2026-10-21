@@ -80,15 +80,15 @@ class LeftHandFingerJointStatePublisher(Node):
 
         self.subscription = self.create_subscription(
             Float32MultiArray,
-            "/left_hand/finger_ratios",
+            "/right_hand/finger_ratios",
             self.finger_ratio_callback,
             10,
         )
 
         self.timer = self.create_timer(0.05, self.publish_joint_states)
 
-        self.get_logger().info("Left Hand Finger Joint State Publisher started")
-        self.get_logger().info("Subscribed: /left_hand/finger_ratios")
+        self.get_logger().info("Right Hand Finger Joint State Publisher started")
+        self.get_logger().info("Subscribed: /right_hand/finger_ratios")
         self.get_logger().info("Publishing: /joint_states at 20 Hz")
         self.get_logger().info("data order: [thumb, index, middle, ring]")
 

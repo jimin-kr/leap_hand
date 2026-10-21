@@ -39,10 +39,11 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 
 TOPIC_NAME = "/joint_states"
-RATIO_TOPIC = "/left_hand/finger_ratios"
+RATIO_TOPIC = "/right_hand/finger_ratios"
+FALLBACK_RATIO_TOPIC = "/left_hand/finger_ratios"
 FINGER_NAMES = ["index", "middle", "ring", "thumb"]
 RATIO_ORDER = ["thumb", "index", "middle", "ring"]  # order expected by the real-hand node
-MOTOR_MAP_NAME = "left_hand_motor_map.json"
+MOTOR_MAP_NAME = "right_hand_motor_map.json"
 
 
 def default_motor_map_path():
@@ -321,6 +322,7 @@ class ColleagueRatioJointStatePublisher(Node):
         self.motor_map = motor_map
         self.publisher = self.create_publisher(JointState, TOPIC_NAME, 10)
         self.ratio_publisher = self.create_publisher(Float32MultiArray, RATIO_TOPIC, 10)
+        self.fallback_ratio_publisher = self.create_publisher(Float32MultiArray, FALLBACK_RATIO_TOPIC, 10)
         self.get_logger().info("Colleague Ratio LEAP Teleop Node started.")
         self.get_logger().info(f"Publishing 16 joint states to {TOPIC_NAME}")
         self.get_logger().info(f"Publishing finger ratios to {RATIO_TOPIC}")
@@ -348,6 +350,7 @@ class ColleagueRatioJointStatePublisher(Node):
             float(ratios.get("ring", 0.0)),
         ]
         self.ratio_publisher.publish(ratio_msg)
+        self.fallback_ratio_publisher.publish(ratio_msg)
 
 
 def rotate_frame(frame, rot):
