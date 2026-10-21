@@ -68,13 +68,39 @@ def load_motor_map(path):
 
 
 class RealSenseCamera:
-    def __init__(self, width=640, height=480, fps=30):
+    def __init__(self, width=640, height=480, fps=30, serial=None, preferred_model="d405"):
         import pyrealsense2 as rs
         self.rs = rs
         self.pipeline = rs.pipeline()
         self.config = rs.config()
+
+        ctx = rs.context()
+        devices = ctx.query_devices()
+        selected_desc = None
+
+        if serial:
+            self.config.enable_device(str(serial))
+            selected_desc = f"Serial {serial}"
+        elif preferred_model and preferred_model.lower() != "any":
+            for dev in devices:
+                dev_name = dev.get_info(rs.camera_info.name)
+                dev_serial = dev.get_info(rs.camera_info.serial_number)
+                if preferred_model.lower() in dev_name.lower():
+                    self.config.enable_device(dev_serial)
+                    selected_desc = f"{dev_name} (Serial: {dev_serial})"
+                    break
+
+        if not selected_desc and len(devices) > 0:
+            dev = devices[0]
+            dev_name = dev.get_info(rs.camera_info.name)
+            dev_serial = dev.get_info(rs.camera_info.serial_number)
+            self.config.enable_device(dev_serial)
+            selected_desc = f"{dev_name} (Serial: {dev_serial})"
+
+        self.selected_device = selected_desc or "Default Device"
         self.config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
         self.pipeline.start(self.config)
+
 
     def read(self):
         try:
@@ -118,6 +144,9 @@ def make_zero_ratios():
         "middle": 0.0,
         "ring": 0.0,
         "thumb": 0.0,
+        "spread_index": 0.0,
+        "spread_middle": 0.0,
+        "spread_ring": 0.0,
     }
 
 
@@ -193,11 +222,64 @@ def compute_finger_ratios(hand_landmarks, image_width, image_height):
     # Combined 3D Dex-Retargeting Thumb Ratio
     thumb = clamp(0.5 * thumb_dist_ratio + 0.5 * thumb_angle_ratio)
 
+    # -------------------------------------------------------------
+    # 3D Palm Coordinates & Finger Spread (Abduction/Adduction)
+    # -------------------------------------------------------------
+    p0 = pts_3d[0]
+    p6 = pts_3d[6]    # Index PIP
+    p9 = pts_3d[9]    # Middle MCP
+    p10 = pts_3d[10]  # Middle PIP
+    p13 = pts_3d[13]  # Ring MCP
+    p14 = pts_3d[14]  # Ring PIP
+
+    v_knuckle = p5 - p17
+    norm_knuckle = np.linalg.norm(v_knuckle)
+    u_knuckle = v_knuckle / norm_knuckle if norm_knuckle > 1e-6 else np.array([1.0, 0.0, 0.0])
+
+    v_long = p9 - p0
+    norm_long = np.linalg.norm(v_long)
+    u_long = v_long / norm_long if norm_long > 1e-6 else np.array([0.0, 1.0, 0.0])
+
+    u_z = np.cross(u_knuckle, u_long)
+    norm_z = np.linalg.norm(u_z)
+    u_z = u_z / norm_z if norm_z > 1e-6 else np.array([0.0, 0.0, 1.0])
+
+    u_y = u_long
+    u_x = np.cross(u_y, u_z)
+    norm_x = np.linalg.norm(u_x)
+    u_x = u_x / norm_x if norm_x > 1e-6 else np.array([1.0, 0.0, 0.0])
+
+    v_idx = p6 - p5
+    v_mid = p10 - p9
+    v_ring = p14 - p13
+
+    theta_idx = math.degrees(math.atan2(np.dot(v_idx, u_x), np.dot(v_idx, u_y)))
+    theta_mid = math.degrees(math.atan2(np.dot(v_mid, u_x), np.dot(v_mid, u_y)))
+    theta_ring = math.degrees(math.atan2(np.dot(v_ring, u_x), np.dot(v_ring, u_y)))
+
+    d_idx = theta_idx - theta_mid
+    d_ring = -(theta_ring - theta_mid)
+
+    if d_idx > 0:
+        spread_index = min(1.0, d_idx / 16.0)
+    else:
+        spread_index = max(-1.0, d_idx / 8.0)
+
+    if d_ring > 0:
+        spread_ring = min(1.0, d_ring / 16.0)
+    else:
+        spread_ring = max(-1.0, d_ring / 8.0)
+
+    spread_middle = max(-1.0, min(1.0, theta_mid / 10.0))
+
     return {
         "index": index,
         "middle": middle,
         "ring": ring,
         "thumb": thumb,
+        "spread_index": spread_index,
+        "spread_middle": spread_middle,
+        "spread_ring": spread_ring,
     }
 
 
@@ -206,36 +288,43 @@ def exponential_smooth(prev, current, alpha):
         return current.copy()
 
     output = {}
-    for name in FINGER_NAMES:
-        output[name] = prev[name] * (1.0 - alpha) + current[name] * alpha
+    for k in current:
+        p = prev.get(k, 0.0)
+        output[k] = p * (1.0 - alpha) + current[k] * alpha
 
     return output
 
 
 def apply_deadzone(ratios, deadzone):
     output = {}
-    for name in FINGER_NAMES:
-        value = ratios[name]
-        if value < deadzone:
-            value = 0.0
-        output[name] = value
+    for k, value in ratios.items():
+        if k.startswith("spread"):
+            if abs(value) < deadzone:
+                value = 0.0
+        else:
+            if value < deadzone:
+                value = 0.0
+        output[k] = value
 
     return output
 
 
 def apply_max_ratio(ratios, max_ratio):
     output = {}
-    for name in FINGER_NAMES:
-        output[name] = clamp(ratios[name], 0.0, max_ratio)
+    for k, value in ratios.items():
+        if k.startswith("spread"):
+            output[k] = max(-1.0, min(1.0, float(value)))
+        else:
+            output[k] = clamp(value, 0.0, max_ratio)
 
     return output
 
 
 def step_limit(prev_output, target, max_step):
     output = {}
-    for name in FINGER_NAMES:
-        prev = prev_output[name]
-        goal = target[name]
+    for k in target:
+        prev = prev_output.get(k, 0.0)
+        goal = target[k]
         diff = goal - prev
 
         if diff > max_step:
@@ -243,7 +332,10 @@ def step_limit(prev_output, target, max_step):
         elif diff < -max_step:
             diff = -max_step
 
-        output[name] = clamp(prev + diff)
+        if k.startswith("spread"):
+            output[k] = max(-1.0, min(1.0, prev + diff))
+        else:
+            output[k] = clamp(prev + diff)
 
     return output
 
@@ -262,6 +354,13 @@ def shortest_angle_delta(open_deg, close_deg):
 def get_joint_position_rad(motor_map, dxl_id, ratios):
     """Motor travel (open -> close, scaled by finger ratio) as a URDF joint angle."""
     key = str(dxl_id)
+    if dxl_id in (1, 5, 9):
+        spread_map = {1: "spread_index", 5: "spread_middle", 9: "spread_ring"}
+        s_val = float(ratios.get(spread_map[dxl_id], 0.0))
+        sign = float(motor_map.get("spread_sign", {}).get(key, 1.0)) * float(motor_map.get("urdf_sign", {}).get(key, 1))
+        # 10 degrees = 0.1745 rad
+        return math.radians(sign * s_val * 10.0)
+
     open_deg = float(motor_map["open_pose_deg"][key])
     close_deg = float(motor_map["close_pose_deg"][key])
 
@@ -270,7 +369,7 @@ def get_joint_position_rad(motor_map, dxl_id, ratios):
     ratio = 0.0
     for finger_name, ids in motor_map["ids"].items():
         if dxl_id in ids:
-            ratio = ratios[finger_name]
+            ratio = ratios.get(finger_name, 0.0)
             break
 
     sign = float(motor_map.get("urdf_sign", {}).get(key, 1))
@@ -289,16 +388,18 @@ def draw_text(image, target, output, publish_enabled, hand_detected, source_name
         "press q: quit",
         "",
         "TARGET RATIOS:",
-        f"  index : {target['index']:.2f}",
-        f"  middle: {target['middle']:.2f}",
-        f"  ring  : {target['ring']:.2f}",
-        f"  thumb : {target['thumb']:.2f}",
+        f"  index : {target.get('index', 0.0):.2f}",
+        f"  middle: {target.get('middle', 0.0):.2f}",
+        f"  ring  : {target.get('ring', 0.0):.2f}",
+        f"  thumb : {target.get('thumb', 0.0):.2f}",
+        f"  spread: I={target.get('spread_index', 0.0):+.2f} M={target.get('spread_middle', 0.0):+.2f} R={target.get('spread_ring', 0.0):+.2f}",
         "",
         "OUTPUT RATIOS:",
-        f"  index : {output['index']:.2f}",
-        f"  middle: {output['middle']:.2f}",
-        f"  ring  : {output['ring']:.2f}",
-        f"  thumb : {output['thumb']:.2f}",
+        f"  index : {output.get('index', 0.0):.2f}",
+        f"  middle: {output.get('middle', 0.0):.2f}",
+        f"  ring  : {output.get('ring', 0.0):.2f}",
+        f"  thumb : {output.get('thumb', 0.0):.2f}",
+        f"  spread: I={output.get('spread_index', 0.0):+.2f} M={output.get('spread_middle', 0.0):+.2f} R={output.get('spread_ring', 0.0):+.2f}",
     ]
 
     y = 30
@@ -322,10 +423,12 @@ class ColleagueRatioJointStatePublisher(Node):
         self.motor_map = motor_map
         self.publisher = self.create_publisher(JointState, TOPIC_NAME, 10)
         self.ratio_publisher = self.create_publisher(Float32MultiArray, RATIO_TOPIC, 10)
-        self.fallback_ratio_publisher = self.create_publisher(Float32MultiArray, FALLBACK_RATIO_TOPIC, 10)
+        self.spread_publisher = self.create_publisher(Float32MultiArray, "/right_hand/finger_spread", 10)
+        self.fallback_spread_publisher = self.create_publisher(Float32MultiArray, "/left_hand/finger_spread", 10)
         self.get_logger().info("Colleague Ratio LEAP Teleop Node started.")
         self.get_logger().info(f"Publishing 16 joint states to {TOPIC_NAME}")
         self.get_logger().info(f"Publishing finger ratios to {RATIO_TOPIC}")
+        self.get_logger().info("Publishing finger spread to /right_hand/finger_spread")
 
     def publish_ratios(self, ratios):
         # 1. Publish URDF joint states for RViz simulation
@@ -341,16 +444,29 @@ class ColleagueRatioJointStatePublisher(Node):
         msg.position = positions
         self.publisher.publish(msg)
 
-        # 2. Publish finger ratios for real-hand safe node (order: thumb, index, middle, ring)
+        # 2. Publish finger ratios for real-hand safe node (order: thumb, index, middle, ring, spread_idx, spread_mid, spread_rng)
         ratio_msg = Float32MultiArray()
         ratio_msg.data = [
             float(ratios.get("thumb", 0.0)),
             float(ratios.get("index", 0.0)),
             float(ratios.get("middle", 0.0)),
             float(ratios.get("ring", 0.0)),
+            float(ratios.get("spread_index", 0.0)),
+            float(ratios.get("spread_middle", 0.0)),
+            float(ratios.get("spread_ring", 0.0)),
         ]
         self.ratio_publisher.publish(ratio_msg)
         self.fallback_ratio_publisher.publish(ratio_msg)
+
+        # 3. Dedicated spread publisher
+        spread_msg = Float32MultiArray()
+        spread_msg.data = [
+            float(ratios.get("spread_index", 0.0)),
+            float(ratios.get("spread_middle", 0.0)),
+            float(ratios.get("spread_ring", 0.0)),
+        ]
+        self.spread_publisher.publish(spread_msg)
+        self.fallback_spread_publisher.publish(spread_msg)
 
 
 def rotate_frame(frame, rot):
@@ -367,6 +483,8 @@ def main():
     parser = argparse.ArgumentParser(description="Colleague Ratio LEAP Teleop Node (RealSense / Webcam)")
     parser.add_argument("--source", type=str, default="realsense", choices=["realsense", "webcam"], help="Camera source")
     parser.add_argument("--camera", type=int, default=0, help="Webcam device index if source is webcam")
+    parser.add_argument("--camera-model", type=str, default="d405", help="Preferred RealSense camera model (default: d405)")
+    parser.add_argument("--camera-serial", type=str, default=None, help="Specific RealSense camera serial number")
     parser.add_argument("--rot", type=str, default="none", choices=["none", "cw", "ccw", "180"], help="Rotation of camera frame")
     parser.add_argument("--mirror", action="store_true", help="Mirror camera preview")
     parser.add_argument("--max-ratio", type=float, default=1.0, help="Maximum finger ratio limit")
@@ -392,12 +510,13 @@ def main():
     if cam_type == "realsense":
         try:
             node.get_logger().info("Initializing Intel RealSense camera...")
-            cam = RealSenseCamera(width=640, height=480, fps=30)
-            node.get_logger().info("Intel RealSense camera started successfully.")
+            cam = RealSenseCamera(width=640, height=480, fps=30, serial=args.camera_serial, preferred_model=args.camera_model)
+            node.get_logger().info(f"Intel RealSense camera [{cam.selected_device}] started successfully.")
         except Exception as e:
             node.get_logger().warn(f"Failed to start RealSense camera: {e}")
             node.get_logger().warn(f"Falling back to OpenCV Webcam (index {args.camera})...")
             cam_type = "webcam"
+
 
     if cam_type == "webcam":
         cam = OpenCVCamera(args.camera)

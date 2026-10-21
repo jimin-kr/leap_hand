@@ -20,16 +20,27 @@ fi
 
 # 2. 필수 시스템 패키지 설치
 echo "[2/5] 필수 빌드 도구 및 라이브러리 설치 확인..."
-sudo apt update
-sudo apt install -y python3-pip python3-colcon-common-extensions \
-    ros-$ROS_DISTRO-joint-state-publisher \
-    ros-$ROS_DISTRO-robot-state-publisher \
-    ros-$ROS_DISTRO-rviz2 || true
+REQUIRED_PKGS="python3-pip python3-colcon-common-extensions ros-$ROS_DISTRO-joint-state-publisher ros-$ROS_DISTRO-robot-state-publisher ros-$ROS_DISTRO-rviz2"
+MISSING_PKGS=""
+for pkg in $REQUIRED_PKGS; do
+    if ! dpkg -s "$pkg" &>/dev/null; then
+        MISSING_PKGS="$MISSING_PKGS $pkg"
+    fi
+done
+
+if [ -n "$MISSING_PKGS" ]; then
+    echo "  -> 미설치 시스템 패키지 설치 진행:$MISSING_PKGS"
+    sudo apt update
+    sudo apt install -y $MISSING_PKGS
+else
+    echo "  -> 필수 시스템 패키지가 이미 모두 설치되어 있습니다."
+fi
 
 # 3. 파이썬 의존성 패키지 설치
 echo "[3/5] 파이썬 패키지 설치 (dynamixel_sdk, opencv, mediapipe, pyrealsense2 등)..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-pip3 install -r "${SCRIPT_DIR}/requirements.txt"
+pip3 install --user -r "${SCRIPT_DIR}/requirements.txt"
+
 
 # 4. 시리얼 포트(다이나믹셀 USB) 권한 설정
 echo "[4/5] USB 시리얼 포트(/dev/ttyUSB*) 권한 설정 (dialout 그룹)..."

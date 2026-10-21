@@ -1,8 +1,32 @@
+import glob
+import sys
 from dynamixel_sdk import *
 
-PORT = "/dev/ttyUSB0"
+DEFAULT_PORT = "/dev/ttyUSB0"
 BAUD = 4000000
 PROTOCOL = 2.0
+
+def auto_detect_port():
+    if len(sys.argv) > 1 and sys.argv[1].startswith("/dev/"):
+        return sys.argv[1]
+    pkt = PacketHandler(PROTOCOL)
+    for p in sorted(glob.glob("/dev/ttyUSB*")):
+        try:
+            ph = PortHandler(p)
+            if ph.openPort():
+                if ph.setBaudRate(BAUD):
+                    _, res, _ = pkt.ping(ph, 0)
+                    ph.closePort()
+                    if res == COMM_SUCCESS:
+                        return p
+                else:
+                    ph.closePort()
+        except Exception:
+            pass
+    return DEFAULT_PORT
+
+PORT = auto_detect_port()
+print(f"Connecting to port: {PORT}")
 
 ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
@@ -22,6 +46,7 @@ if not port.openPort():
 if not port.setBaudRate(BAUD):
     print(f"baudrate set failed: {BAUD}")
     raise SystemExit
+
 
 print("ID | op_mode | torque | hw_error | current | position (deg) | voltage | temp")
 print("-" * 80)

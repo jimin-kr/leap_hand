@@ -1,17 +1,41 @@
 #!/usr/bin/env python3
+import glob
+import sys
 import time
 from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
 
-PORT = "/dev/ttyUSB0"
+DEFAULT_PORT = "/dev/ttyUSB0"
 BAUD = 4000000
 PROTOCOL = 2.0
 ADDR_TORQUE_ENABLE = 64
 ADDR_HW_ERROR = 70
 ADDR_PRESENT_VOLTAGE = 144
 
+def auto_detect_port():
+    if len(sys.argv) > 1 and sys.argv[1].startswith("/dev/"):
+        return sys.argv[1]
+    pkt = PacketHandler(PROTOCOL)
+    for p in sorted(glob.glob("/dev/ttyUSB*")):
+        try:
+            ph = PortHandler(p)
+            if ph.openPort():
+                if ph.setBaudRate(BAUD):
+                    _, res, _ = pkt.ping(ph, 0)
+                    ph.closePort()
+                    if res == COMM_SUCCESS:
+                        return p
+                else:
+                    ph.closePort()
+        except Exception:
+            pass
+    return DEFAULT_PORT
+
 def main():
+    PORT = auto_detect_port()
+    print(f"Connecting to port: {PORT}")
     p = PortHandler(PORT)
     k = PacketHandler(PROTOCOL)
+
 
     if not p.openPort():
         print(f"[ERROR] 포트 열기 실패: {PORT}")
