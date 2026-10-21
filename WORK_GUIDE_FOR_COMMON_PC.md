@@ -83,10 +83,11 @@ source ~/arm_lab_control/leap_hand/install/setup.bash
 ### [터미널 1] 실기체 모터 제어 노드
 ```bash
 cd ~/arm_lab_control/leap_hand
-python3 left_hand_project/left_hand_finger_ratio_node_safe.py
+python3 right_hand_project/right_hand_finger_ratio_node_safe.py
 ```
 * *노드 실행 시 손가락이 가볍게 펴진 상태를 엔코더가 스캔하여 시작 기준으로 잡습니다.*
 * *엄지 회전(15), 엄지 굽힘(7), 손가락 굽힘(10) 속도 프로파일이 기본 적용되어 있습니다.*
+* *(참고: 기존 left_hand_project 경로로 실행하셔도 심볼릭 링크로 완벽 호환됩니다)*
 
 ### [터미널 2] 비전 손 랜드마크 추적 노드
 ```bash
@@ -104,7 +105,7 @@ ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /left_hand/arm std_msgs/msg/Bool "{data: false}"
 
 # 비상 정지 (즉시 전 모터 힘 풀기):
-python3 left_hand_project/dxl_torque_off.py
+python3 right_hand_project/dxl_torque_off.py
 ```
 
 ---
