@@ -37,6 +37,8 @@ setup(
         "console_scripts": [
             "retarget_check = leap_teleop.retarget_check:main",
             "rviz_teleop = leap_teleop.rviz_teleop_node:main",
+            "left_hand_teleop_node = leap_teleop.rviz_teleop_node:main",
+            "right_hand_teleop_node = leap_teleop.rviz_teleop_node:main",
         ],
     },
 )
